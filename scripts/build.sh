@@ -27,7 +27,7 @@ TVOSSIMSYSROOT=$XCODE_ROOT/Platforms/AppleTVSimulator.platform/Developer
 WATCHOSSYSROOT=$XCODE_ROOT/Platforms/WatchOS.platform/Developer
 WATCHOSSIMSYSROOT=$XCODE_ROOT/Platforms/WatchSimulator.platform/Developer
 
-LIBS_TO_BUILD_ALL="atomic,chrono,container,context,contract,coroutine,date_time,exception,fiber,filesystem,graph,iostreams,json,locale,log,math,nowide,program_options,random,regex,serialization,stacktrace,test,thread,timer,type_erasure,wave,url,cobalt,charconv"
+LIBS_TO_BUILD_ALL="atomic,chrono,container,context,contract,coroutine,date_time,exception,fiber,filesystem,graph,iostreams,json,locale,log,math,nowide,program_options,python,random,regex,serialization,stacktrace,test,thread,timer,type_erasure,wave,url,cobalt,charconv"
 
 BUILD_PLATFORMS_ALL="macosx,macosx-arm64,macosx-x86_64,macosx-both,ios,iossim,iossim-arm64,iossim-x86_64,iossim-both,catalyst,catalyst-arm64,catalyst-x86_64,catalyst-both,xros,xrossim,xrossim-arm64,xrossim-x86_64,xrossim-both,tvos,tvossim,tvossim-both,tvossim-arm64,tvossim-x86_64,watchos,watchossim,watchossim-both,watchossim-arm64,watchossim-x86_64"
 
@@ -49,6 +49,11 @@ BUILD_PLATFORMS="macosx,ios,iossim,catalyst"
 [[ -d $WATCHOSSIMSYSROOT/SDKs/WatchSimulator.sdk ]] && BUILD_PLATFORMS="$BUILD_PLATFORMS,watchossim-both"
 
 REBUILD=false
+
+# Python support variables
+PYTHON_INC_DIR=""
+PYTHON_LIB_FILE=""
+PYTHON_LIB_BASENAME=""
 
 # Function to determine architecture
 boost_arc() {
@@ -83,14 +88,30 @@ is_subset() {
 }
 
 # Parse command line arguments
-for i in "$@"; do
-  case $i in
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --python-include)
+      PYTHON_INC_DIR="$2"
+      shift 2
+      ;;
+    --python-include=*)
+      PYTHON_INC_DIR="${1#*=}"
+      shift
+      ;;
+    --python-lib)
+      PYTHON_LIB_FILE="$2"
+      shift 2
+      ;;
+    --python-lib=*)
+      PYTHON_LIB_FILE="${1#*=}"
+      shift
+      ;;
     -l=*|--libs=*)
-      LIBS_TO_BUILD="${i#*=}"
+      LIBS_TO_BUILD="${1#*=}"
       shift
       ;;
     -p=*|--platforms=*)
-      BUILD_PLATFORMS="${i#*=},"
+      BUILD_PLATFORMS="${1#*=},"
       shift
       ;;
     --rebuild)
@@ -104,13 +125,23 @@ for i in "$@"; do
       shift
       ;;
     -*|--*)
-      echo "Unknown option $i"
+      echo "Unknown option $1"
       exit 1
       ;;
     *)
+      shift
       ;;
   esac
 done
+
+# If building python, parse library basename
+if [[ " ${LIBS_TO_BUILD//,/ } " == *" python "* ]] && [[ -n "$PYTHON_LIB_FILE" ]]; then
+    pbase=$(basename "$PYTHON_LIB_FILE")
+    pbase="${pbase#lib}"
+    PYTHON_LIB_BASENAME="${pbase%.a}"
+    echo "[INFO] Python include: $PYTHON_INC_DIR"
+    echo "[INFO] Python library: $PYTHON_LIB_FILE (basename: $PYTHON_LIB_BASENAME)"
+fi
 
 LIBS_TO_BUILD=${LIBS_TO_BUILD//,/ }
 
@@ -330,6 +361,12 @@ B2_BUILD_OPTIONS="-j$THREAD_COUNT address-model=64 release link=static runtime-l
 
 [[ ! -z "${ICU_PATH:-}" ]] && B2_BUILD_OPTIONS="$B2_BUILD_OPTIONS -sICU_PATH=\"$ICU_PATH\""
 
+# Add Python build flags if building python
+if [[ " $LIBS_TO_BUILD " == *" python "* ]] && [[ -n "$PYTHON_INC_DIR" ]] && [[ -n "$PYTHON_LIB_BASENAME" ]]; then
+    B2_BUILD_OPTIONS="$B2_BUILD_OPTIONS define=BOOST_PYTHON_STATIC_LIB define=Py_NO_ENABLE_SHARED"
+    B2_BUILD_OPTIONS="$B2_BUILD_OPTIONS cxxflags=\"-I$PYTHON_INC_DIR\" linkflags=\"-L$(dirname "$PYTHON_LIB_FILE") -l$PYTHON_LIB_BASENAME\""
+fi
+
 for i in $LIBS_TO_BUILD; do :;
   B2_BUILD_OPTIONS="$B2_BUILD_OPTIONS --with-$i"
 done
@@ -356,6 +393,12 @@ EOF
         cp $ICU_PATH/frameworks/icudata.xcframework/$5/libicudata.a $ICU_PATH/lib/
         cp $ICU_PATH/frameworks/icui18n.xcframework/$5/libicui18n.a $ICU_PATH/lib/
         cp $ICU_PATH/frameworks/icuuc.xcframework/$5/libicuuc.a $ICU_PATH/lib/
+    fi
+    # Add Python configuration to user-config.jam
+    if [[ " $LIBS_TO_BUILD " == *" python "* ]] && [[ -n "$PYTHON_INC_DIR" ]] && [[ -n "$PYTHON_LIB_FILE" ]]; then
+        cat >> tools/build/src/user-config.jam <<PYEOF
+using python : 3.11 : /usr/bin/env : $PYTHON_INC_DIR : $(dirname "$PYTHON_LIB_FILE") ;
+PYEOF
     fi
     ./b2 -j8 --stagedir=stage/$1-$2 toolset=darwin-$1 architecture=$(boost_arc $2) abi=$(boost_abi $2) ${7:-} $B2_BUILD_OPTIONS
     rm -rf bin.v2
@@ -505,6 +548,8 @@ for i in $LIBS_TO_BUILD; do :;
 		build_xcframework boost_prg_exec_monitor
 		build_xcframework boost_test_exec_monitor
 		build_xcframework boost_unit_test_framework
+	elif [ $i == "python" ]; then
+		build_xcframework boost_python311
 	else
 	    build_xcframework "boost_$i"
 	fi
