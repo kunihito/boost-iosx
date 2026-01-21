@@ -134,13 +134,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# If building python, parse library basename
+# If building python, parse library basename and version
+PYTHON_VERSION=""
+PYTHON_VERSION_NODOT=""
 if [[ " ${LIBS_TO_BUILD//,/ } " == *" python "* ]] && [[ -n "$PYTHON_LIB_FILE" ]]; then
     pbase=$(basename "$PYTHON_LIB_FILE")
     pbase="${pbase#lib}"
     PYTHON_LIB_BASENAME="${pbase%.a}"
+    # Extract version from basename (e.g., python3.13 -> 3.13)
+    PYTHON_VERSION=$(echo "$PYTHON_LIB_BASENAME" | sed 's/python//')
+    PYTHON_VERSION_NODOT="${PYTHON_VERSION//./}"
     echo "[INFO] Python include: $PYTHON_INC_DIR"
     echo "[INFO] Python library: $PYTHON_LIB_FILE (basename: $PYTHON_LIB_BASENAME)"
+    echo "[INFO] Python version: $PYTHON_VERSION (nodot: $PYTHON_VERSION_NODOT)"
 fi
 
 LIBS_TO_BUILD=${LIBS_TO_BUILD//,/ }
@@ -397,7 +403,7 @@ EOF
     # Add Python configuration to user-config.jam
     if [[ " $LIBS_TO_BUILD " == *" python "* ]] && [[ -n "$PYTHON_INC_DIR" ]] && [[ -n "$PYTHON_LIB_FILE" ]]; then
         cat >> tools/build/src/user-config.jam <<PYEOF
-using python : 3.11 : /usr/bin/env : $PYTHON_INC_DIR : $(dirname "$PYTHON_LIB_FILE") ;
+using python : $PYTHON_VERSION : /usr/bin/env : $PYTHON_INC_DIR : $(dirname "$PYTHON_LIB_FILE") ;
 PYEOF
     fi
     ./b2 -j8 --stagedir=stage/$1-$2 toolset=darwin-$1 architecture=$(boost_arc $2) abi=$(boost_abi $2) ${7:-} $B2_BUILD_OPTIONS
@@ -549,7 +555,7 @@ for i in $LIBS_TO_BUILD; do :;
 		build_xcframework boost_test_exec_monitor
 		build_xcframework boost_unit_test_framework
 	elif [ $i == "python" ]; then
-		build_xcframework boost_python311
+		build_xcframework "boost_python${PYTHON_VERSION_NODOT}"
 	else
 	    build_xcframework "boost_$i"
 	fi
